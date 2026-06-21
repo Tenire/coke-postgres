@@ -1,0 +1,7 @@
+package("coke")
+    add_deps("workflow")
+    add_urls("https://github.com/kedixa/coke.git")
+    on_install("linux", "macosx", function (package)
+        import("package.tools.xmake").install(package)
+    end)
+package_end()
