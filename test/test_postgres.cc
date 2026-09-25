@@ -73,6 +73,116 @@ coke::Task<int> test_connection_session(ckpg::PostgresClientParams params) {
 
     co_return 0;
 }
+coke::Task<int> test_chrono_and_outcome(ckpg::PostgresClientParams params) {
+    ckpg::PostgresConnection conn(params);
+
+    auto res_create = co_await conn.request(
+        "CREATE TEMP TABLE ckpg_chrono_test(id int, ts timestamptz, note text);"
+    );
+    if (!res_create.ok()) {
+        std::cerr << "Failed to create temp table: " << res_create.error_message() << "\n";
+        co_return 1;
+    }
+
+    // Fixed microsecond instant: 2026-09-25 15:30:45.123456 UTC
+    using namespace std::chrono;
+    auto test_tp = sys_time<microseconds>(seconds(1790350245) + microseconds(123456));
+
+    // Test parameterized insert with time_point
+    auto res_insert = co_await conn.request(
+        "INSERT INTO ckpg_chrono_test (id, ts, note) VALUES ($1, $2, $3);",
+        1, test_tp, "instant_test"
+    );
+
+    if (!res_insert.ok()) {
+        std::cerr << "Insert failed: " << res_insert.error_message() << "\n";
+        co_return 1;
+    }
+
+    if (res_insert.affected_rows() != 1) {
+        std::cerr << "Expected affected_rows=1, got " << res_insert.affected_rows() << "\n";
+        co_return 1;
+    }
+
+    if (res_insert.command_tag() != "INSERT 0 1") {
+        std::cerr << "Unexpected command_tag: " << res_insert.command_tag() << "\n";
+        co_return 1;
+    }
+
+    // Query back
+    auto res_select = co_await conn.request(
+        "SELECT id, ts, note FROM ckpg_chrono_test WHERE id = $1;", 1
+    );
+    if (!res_select.ok()) {
+        std::cerr << "Select failed: " << res_select.error_message() << "\n";
+        co_return 1;
+    }
+
+    ckpg::PostgresResultSetView view(res_select);
+    std::vector<ckpg::PostgresCellView> cells;
+
+    if (!view.next_row(cells) || cells.size() != 3) {
+        std::cerr << "Failed to fetch row from ckpg_chrono_test\n";
+        co_return 1;
+    }
+
+    // Verify strong typed chrono decoder
+    auto read_tp = cells[1].as_time_point();
+    auto read_us = time_point_cast<microseconds>(read_tp);
+    if (read_us != test_tp) {
+        std::cerr << "Chrono roundtrip mismatch! Expected "
+                  << test_tp.time_since_epoch().count()
+                  << " us, got " << read_us.time_since_epoch().count() << " us\n";
+        co_return 1;
+    }
+
+    auto read_sys = cells[1].as_sys_time<microseconds>();
+    if (read_sys != test_tp) {
+        std::cerr << "as_sys_time mismatch!\n";
+        co_return 1;
+    }
+
+    if (!cells[1].as_optional_time_point().has_value()) {
+        std::cerr << "as_optional_time_point empty!\n";
+        co_return 1;
+    }
+
+    if (!cells[2].as_optional_string().has_value() ||
+        cells[2].as_optional_string().value() != "instant_test") {
+        std::cerr << "as_optional_string failed\n";
+        co_return 1;
+    }
+
+    // Test UPDATE affected rows
+    auto res_update = co_await conn.request(
+        "UPDATE ckpg_chrono_test SET note = $1 WHERE id = $2;", "updated", 1
+    );
+    if (!res_update.ok() || res_update.affected_rows() != 1) {
+        std::cerr << "Update failed or affected_rows mismatch\n";
+        co_return 1;
+    }
+
+    co_await conn.disconnect();
+    co_return 0;
+}
+
+coke::Task<int> test_client_url_construction(const std::string &url) {
+    ckpg::PostgresClient cli(url);
+    auto res = co_await cli.request("SELECT 'url_client_ok' AS msg;");
+    if (!res.ok()) {
+        std::cerr << "URL client query failed: " << res.error_message() << "\n";
+        co_return 1;
+    }
+
+    ckpg::PostgresConnection conn(url);
+    auto conn_res = co_await conn.request("SELECT 'url_conn_ok' AS msg;");
+    if (!conn_res.ok()) {
+        std::cerr << "URL connection query failed: " << conn_res.error_message() << "\n";
+        co_return 1;
+    }
+    co_await conn.disconnect();
+    co_return 0;
+}
 
 coke::Task<int> test_parameterized_query(ckpg::PostgresClientParams params) {
     ckpg::PostgresClient cli(params);
@@ -217,19 +327,50 @@ int test_null_view()
 
     return 0;
 }
+int test_url_parsing()
+{
+    std::string url = "postgresqls://alice:secret%3Apass@db.example.com:5433/production_db?application_name=my_service&sslmode=require";
+    auto params = ckpg::PostgresClientParams::from_url(url);
+
+    if (!params.use_ssl) return 1;
+    if (params.host != "db.example.com") return 2;
+    if (params.port != 5433) return 3;
+    if (params.username != "alice") return 4;
+    if (params.password != "secret:pass") return 5;
+    if (params.dbname != "production_db") return 6;
+    if (params.application_name != "my_service") return 7;
+
+    // Test default port and postgres:// scheme
+    std::string url2 = "postgres://bob@127.0.0.1/testdb";
+    auto p2 = ckpg::PostgresClientParams::from_url(url2);
+    if (p2.use_ssl) return 8;
+    if (p2.port != 5432) return 9;
+    if (p2.username != "bob") return 10;
+    if (!p2.password.empty()) return 11;
+    if (p2.dbname != "testdb") return 12;
+
+    return 0;
+}
+
 
 int main(int argc, char **argv) {
     if (test_null_view() != 0) {
         std::cerr << "test_null_view failed\n";
         return 1;
     }
-    std::cout << "[Test 1/5] test_null_view passed\n";
+    std::cout << "[Test 1/7] test_null_view passed\n";
+    if (test_url_parsing() != 0) {
+        std::cerr << "test_url_parsing failed\n";
+        return 1;
+    }
+    std::cout << "[Test 2/7] test_url_parsing passed\n";
+
     int rc = test_offline_status_and_ownership();
     if (rc != 0) {
         std::cerr << "test_offline_status_and_ownership failed rc=" << rc << "\n";
         return 1;
     }
-    std::cout << "[Test 2/5] test_offline_status_and_ownership passed\n";
+    std::cout << "[Test 3/7] test_offline_status_and_ownership passed\n";
 
     const char* host = getenv("COKE_POSTGRES_HOST");
     if (!host) {
@@ -256,17 +397,31 @@ int main(int argc, char **argv) {
     int ret = coke::sync_wait(test_query(params));
     if (ret != 0)
         return ret;
-    std::cout << "[Test 3/5] test_query passed\n";
+    std::cout << "[Test 4/7] test_query passed\n";
 
     int conn_ret = coke::sync_wait(test_connection_session(params));
     if (conn_ret != 0)
         return conn_ret;
-    std::cout << "[Test 4/5] test_connection_session passed\n";
+    std::cout << "[Test 5/7] test_connection_session passed\n";
 
     int param_ret = coke::sync_wait(test_parameterized_query(params));
     if (param_ret != 0)
         return param_ret;
-    std::cout << "[Test 5/5] test_parameterized_query passed\n";
+    std::cout << "[Test 6/7] test_parameterized_query passed\n";
+
+    int chrono_ret = coke::sync_wait(test_chrono_and_outcome(params));
+    if (chrono_ret != 0)
+        return chrono_ret;
+    std::cout << "[Test 7/7] test_chrono_and_outcome passed\n";
+
+    // Construct URL and test URL-based client & connection
+    std::string conn_url = "postgresql://" + params.username + ":" + params.password +
+                           "@" + params.host + ":" + std::to_string(params.port) +
+                           "/" + params.dbname;
+    int url_cli_ret = coke::sync_wait(test_client_url_construction(conn_url));
+    if (url_cli_ret != 0)
+        return url_cli_ret;
+    std::cout << "[Extra] test_client_url_construction passed\n";
 
     int tx_err_ret = coke::sync_wait(test_transaction_error_and_state(params));
     if (tx_err_ret != 0)

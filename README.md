@@ -11,12 +11,11 @@ It delivers a modern, high-performance, and memory-safe interface for asynchrono
 ## ✨ Features
 
 - **Native C++20 Coroutines**: Full `co_await` syntax eliminating callback hell while preserving Workflow's event-driven concurrency.
-- **Unified Status (`res.ok()`)**: Unifies transport failures and PostgreSQL protocol server errors into a single check via `res.ok()`, with clear access to `res.sqlstate()` and `res.error_message()`.
+- **Unified Status**: Unifies transport failures and PostgreSQL protocol server errors into a single check via `res.ok()`, with `res.sqlstate()`, `res.error_message()`, and `res.affected_rows()`.
 - **Buffer Ownership Transfer**: `PostgresResult` takes full ownership of the response buffer via move semantics in `PostgresAwaiter`, preventing dangling pointers and Use-After-Free (UAF) hazards across coroutine suspension points.
-- **Native Parameterized Queries**: Built-in support for PostgreSQL type matrix via C++ variadic arguments (`$1, $2, ...`) without manual string escaping or explicit `::type` casts.
-- **Symmetric Typed Decoders**: Direct extraction through `PostgresCellView` (`as_bool()`, `as_int()`, `as_bigint()`, `as_double()`, `as_datetime()`, `as_uuid_string()`, `as_jsonb_string()`, `as_bytea()`).
+- **Native Parameterized Queries & Chrono**: Built-in support for PostgreSQL type matrix via C++ variadic arguments (`$1, $2, ...`) without manual string escaping or `::type` casts; native microsecond-precision `std::chrono::system_clock::time_point` binding and extraction (`as_time_point()`, `as_sys_time()`).
+- **Symmetric Typed Decoders**: Direct extraction through `PostgresCellView` (`as_bool()`, `as_int()`, `as_bigint()`, `as_double()`, `as_time_point()`, `as_sys_time()`, `as_datetime()`, `as_uuid_string()`, `as_jsonb_string()`, `as_bytea()`).
 - **Connection & Transaction Tracking**: `PostgresConnection` encapsulates `WFPostgresConnection`, providing real-time transaction state tracking (`in_transaction()`, `is_transaction_failed()`) and controlled graceful termination (`disconnect()`).
-
 ---
 
 ## 📦 Dependencies
@@ -86,8 +85,9 @@ Stateless queries can be dispatched directly with `PostgresClient`:
 #include "ckpg/postgres.h"
 #include "coke/wait.h"
 
-coke::Task<int> hello_postgres(const ckpg::PostgresClientParams &params) {
-    ckpg::PostgresClient cli(params);
+coke::Task<int> hello_postgres(const std::string &database_url) {
+    // Construct directly with a connection URL
+    ckpg::PostgresClient cli(database_url);
 
     auto res = co_await cli.request("SELECT 'Hello, PostgreSQL!' AS greeting, current_timestamp;");
     

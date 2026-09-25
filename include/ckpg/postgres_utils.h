@@ -6,6 +6,7 @@
 #include <vector>
 #include <optional>
 #include <ctime>
+#include <chrono>
 #include "PostgresResult.h"
 #include "postgres_client.h" // IWYU pragma: keep
 
@@ -32,6 +33,19 @@ public:
     bool as_date(struct tm *tm) const { return cell_.as_date(tm); }
     bool as_time(struct tm *tm, int *usec = nullptr) const { return cell_.as_time(tm, usec); }
     bool as_datetime(struct tm *tm, int *usec = nullptr) const { return cell_.as_datetime(tm, usec); }
+    std::chrono::system_clock::time_point as_time_point() const { return cell_.as_time_point(); }
+    template <typename Duration = std::chrono::microseconds>
+    std::chrono::sys_time<Duration> as_sys_time() const {
+        return std::chrono::time_point_cast<Duration>(cell_.as_time_point());
+    }
+    std::optional<std::string> as_optional_string() const {
+        if (is_null()) return std::nullopt;
+        return as_string();
+    }
+    std::optional<std::chrono::system_clock::time_point> as_optional_time_point() const {
+        if (is_null()) return std::nullopt;
+        return as_time_point();
+    }
     std::string as_jsonb_string() const { return cell_.as_jsonb_string(); }
     std::string as_uuid_string() const { return cell_.as_uuid_string(); }
     std::vector<wfpg::protocol::PostgresCell> as_array() const { return cell_.as_array(); }
@@ -74,6 +88,9 @@ public:
     unsigned long long get_insert_oid() const {
         return cursor_ ? cursor_->get_insert_oid() : 0;
     }
+    unsigned long long affected_rows() const { return get_affected_rows(); }
+    const std::string& command_tag() const { return get_command_tag(); }
+    unsigned long long insert_oid() const { return get_insert_oid(); }
     const std::vector<wfpg::protocol::PostgresField>& get_fields() const {
         static const std::vector<wfpg::protocol::PostgresField> empty;
         return cursor_ ? cursor_->get_fields() : empty;

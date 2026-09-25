@@ -11,12 +11,11 @@
 ## ✨ 核心特性 (Features)
 
 - **C++20 原生协程支持**：基于 `coke` 协程体系，完全废除回调地狱，支持原生 `co_await` 异步调用。
-- **统一状态判定 (Unified Status)**：整合底层网络传输状态与 PostgreSQL 协议层 SQL 错误，`res.ok()` 即可统一判断，并暴露清晰的 `res.sqlstate()` 与 `res.error_message()`。
+- **统一状态与结果判定 (Unified Status)**：整合网络传输状态与 PostgreSQL 协议错误，通过 `res.ok()` 统一判定，并直接暴露 `res.sqlstate()`, `res.error_message()`, `res.affected_rows()`。
 - **响应缓冲区所有权转移 (Buffer Ownership Transfer)**：`PostgresResult` 通过 Move 语义接管 `PostgresResponse` 缓冲区，彻底消除跨协程挂起点的悬垂指针与 Use-After-Free 内存隐患。
-- **原生参数化查询 (Parameterized Queries)**：内置完整的 PostgreSQL 类型映射，支持 `$1, $2, ...` 占位符的 C++ 变参绑定，无需手动强转类型或拼接转义字符串。
-- **对称类型解码器 (Typed Cell Decoders)**：提供 `as_bool()`, `as_int()`, `as_bigint()`, `as_double()`, `as_datetime()`, `as_uuid_string()`, `as_jsonb_string()`, `as_bytea()` 等完备提取接口。
+- **原生参数化查询与现代时间支持 (std::chrono)**：内置完整 PostgreSQL 类型映射，直接变参传递 `$1, $2, ...`；原生支持微秒精度 `std::chrono::system_clock::time_point` 双向绑定与解析（`as_time_point()`, `as_sys_time()`）。
+- **对称类型解码器 (Typed Cell Decoders)**：提供 `as_bool()`, `as_int()`, `as_bigint()`, `as_double()`, `as_time_point()`, `as_sys_time()`, `as_datetime()`, `as_uuid_string()`, `as_jsonb_string()`, `as_bytea()` 等完备提取接口。
 - **稳健的会话与事务管理 (Connection & Transaction)**：`PostgresConnection` 封装底层 `WFPostgresConnection`，支持事务状态实时跟踪（`in_transaction()`, `is_transaction_failed()`）与受控优雅断开（`disconnect()`）。
-
 ---
 
 ## 📦 依赖组件 (Dependencies)
@@ -86,8 +85,9 @@ xmake run tutorial_params
 #include "ckpg/postgres.h"
 #include "coke/wait.h"
 
-coke::Task<int> hello_postgres(const ckpg::PostgresClientParams &params) {
-    ckpg::PostgresClient cli(params);
+coke::Task<int> hello_postgres(const std::string &database_url) {
+    // 直接使用数据库连接字符串 URL 构造客户端
+    ckpg::PostgresClient cli(database_url);
 
     auto res = co_await cli.request("SELECT 'Hello, PostgreSQL!' AS greeting, current_timestamp;");
     

@@ -27,7 +27,9 @@ struct PostgresResult {
     wfpg::PostgresStatus status{wfpg::PostgresStatus::from_transport_error(coke::STATE_SYS_ERROR, 0)};
     wfpg::protocol::PostgresResponse resp_storage;
     wfpg::protocol::PostgresResponse *resp{&resp_storage};
-
+    std::string command_tag_{};
+    unsigned long long affected_rows_{0};
+    unsigned long long insert_oid_{0};
     PostgresResult() = default;
 
     PostgresResult(int state, int error, wfpg::WFPostgresTask *task, wfpg::protocol::PostgresResponse *r)
@@ -41,17 +43,23 @@ struct PostgresResult {
 
         if (r) {
             resp_storage = std::move(*r);
+            wfpg::protocol::PostgresResultCursor cursor(&resp_storage);
+            command_tag_ = cursor.get_command_tag();
+            affected_rows_ = cursor.get_affected_rows();
+            insert_oid_ = cursor.get_insert_oid();
         }
         resp = &resp_storage;
     }
-
     PostgresResult(PostgresResult&& other) noexcept
         : state(other.state),
           error(other.error),
           task(other.task),
           status(std::move(other.status)),
           resp_storage(std::move(other.resp_storage)),
-          resp(&resp_storage)
+          resp(&resp_storage),
+          command_tag_(std::move(other.command_tag_)),
+          affected_rows_(other.affected_rows_),
+          insert_oid_(other.insert_oid_)
     {
     }
 
@@ -63,6 +71,9 @@ struct PostgresResult {
             status = std::move(other.status);
             resp_storage = std::move(other.resp_storage);
             resp = &resp_storage;
+            command_tag_ = std::move(other.command_tag_);
+            affected_rows_ = other.affected_rows_;
+            insert_oid_ = other.insert_oid_;
         }
         return *this;
     }
@@ -73,10 +84,14 @@ struct PostgresResult {
     bool ok() const noexcept { return status.ok(); }
     explicit operator bool() const noexcept { return ok(); }
     bool is_error() const noexcept { return !ok(); }
+
+    unsigned long long affected_rows() const noexcept { return affected_rows_; }
+    const std::string& command_tag() const noexcept { return command_tag_; }
+    unsigned long long insert_oid() const noexcept { return insert_oid_; }
+
     const std::string& sqlstate() const noexcept { return status.sqlstate(); }
     const std::string& error_message() const noexcept { return status.message(); }
     const wfpg::protocol::PostgresError& server_error() const noexcept { return status.server_error(); }
-
     wfpg::protocol::PostgresResponse& get_resp() noexcept { return resp_storage; }
     const wfpg::protocol::PostgresResponse& get_resp() const noexcept { return resp_storage; }
 
@@ -123,6 +138,8 @@ struct PostgresClientParams {
     std::string password;
     std::string dbname;
     std::string application_name;
+
+    static PostgresClientParams from_url(std::string_view url);
 };
 
 class PostgresClient {
@@ -132,8 +149,9 @@ public:
     using AwaiterType = PostgresAwaiter;
 
     explicit PostgresClient(const PostgresClientParams &params);
+    explicit PostgresClient(std::string_view url);
+    PostgresClient(std::string_view url, const PostgresClientParams &defaults);
     virtual ~PostgresClient() = default;
-
     PostgresClientParams get_params() const { return params; }
 
     virtual AwaiterType request(const std::string &query);
@@ -170,6 +188,8 @@ protected:
 class PostgresConnection : public PostgresClient {
 public:
     explicit PostgresConnection(const PostgresClientParams &params);
+    explicit PostgresConnection(std::string_view url);
+    PostgresConnection(std::string_view url, const PostgresClientParams &defaults);
     ~PostgresConnection() override;
 
     PostgresConnection(const PostgresConnection&) = delete;

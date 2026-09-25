@@ -46,8 +46,104 @@ private:
         std::greater<std::size_t>
     > free_ids;
 };
+std::string url_decode_str(std::string str)
+{
+    StringUtil::url_decode(str);
+    return str;
+}
 
 } // namespace
+PostgresClientParams PostgresClientParams::from_url(std::string_view url_view)
+{
+    PostgresClientParams params;
+    std::string url_str(url_view);
+    ParsedURI uri;
+    if (URIParser::parse(url_str, uri) != 0) {
+        return params;
+    }
+
+    if (uri.scheme) {
+        std::string_view scheme(uri.scheme);
+        if (scheme == "postgresqls" || scheme == "postgresqless" || scheme == "postgres+ssl") {
+            params.use_ssl = true;
+        }
+    }
+
+    if (uri.host) {
+        params.host = uri.host;
+    }
+
+    if (uri.port) {
+        params.port = std::atoi(uri.port);
+    } else {
+        params.port = 5432;
+    }
+
+    if (uri.userinfo) {
+        std::string_view uinfo(uri.userinfo);
+        auto pos = uinfo.find(':');
+        if (pos != std::string_view::npos) {
+            params.username = url_decode_str(std::string(uinfo.substr(0, pos)));
+            params.password = url_decode_str(std::string(uinfo.substr(pos + 1)));
+        } else {
+            params.username = url_decode_str(std::string(uinfo));
+        }
+    }
+
+    if (uri.path) {
+        std::string_view p(uri.path);
+        if (!p.empty() && p.front() == '/') {
+            p.remove_prefix(1);
+        }
+        params.dbname = url_decode_str(std::string(p));
+    }
+
+    if (uri.query) {
+        std::string q(uri.query);
+        auto pairs = StringUtil::split(q, '&');
+        for (const auto &pair : pairs) {
+            auto kv = StringUtil::split(pair, '=');
+            if (kv.size() >= 2) {
+                std::string k = kv[0];
+                std::string v = url_decode_str(kv[1]);
+                if (k == "application_name") {
+                    params.application_name = v;
+                } else if (k == "sslmode") {
+                    if (v == "require" || v == "verify-ca" || v == "verify-full") {
+                        params.use_ssl = true;
+                    } else if (v == "disable") {
+                        params.use_ssl = false;
+                    }
+                }
+            }
+        }
+    }
+
+    return params;
+}
+
+PostgresClient::PostgresClient(std::string_view url)
+    : PostgresClient(PostgresClientParams::from_url(url))
+{
+}
+
+PostgresClient::PostgresClient(std::string_view url, const PostgresClientParams &defaults)
+    : PostgresClient([&]() {
+        PostgresClientParams p = defaults;
+        PostgresClientParams parsed = PostgresClientParams::from_url(url);
+        p.use_ssl = parsed.use_ssl;
+        p.port = parsed.port;
+        p.host = std::move(parsed.host);
+        p.username = std::move(parsed.username);
+        p.password = std::move(parsed.password);
+        p.dbname = std::move(parsed.dbname);
+        if (!parsed.application_name.empty()) {
+            p.application_name = std::move(parsed.application_name);
+        }
+        return p;
+    }())
+{
+}
 
 PostgresClient::PostgresClient(const PostgresClientParams &p)
     : PostgresClient(p, false, 0)
@@ -156,6 +252,29 @@ PostgresConnection::PostgresConnection(const PostgresClientParams &p)
             conn_.reset();
         }
     }
+}
+
+PostgresConnection::PostgresConnection(std::string_view url)
+    : PostgresConnection(PostgresClientParams::from_url(url))
+{
+}
+
+PostgresConnection::PostgresConnection(std::string_view url, const PostgresClientParams &defaults)
+    : PostgresConnection([&]() {
+        PostgresClientParams p = defaults;
+        PostgresClientParams parsed = PostgresClientParams::from_url(url);
+        p.use_ssl = parsed.use_ssl;
+        p.port = parsed.port;
+        p.host = std::move(parsed.host);
+        p.username = std::move(parsed.username);
+        p.password = std::move(parsed.password);
+        p.dbname = std::move(parsed.dbname);
+        if (!parsed.application_name.empty()) {
+            p.application_name = std::move(parsed.application_name);
+        }
+        return p;
+    }())
+{
 }
 
 PostgresConnection::~PostgresConnection()
