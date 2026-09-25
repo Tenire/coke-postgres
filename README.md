@@ -1,35 +1,46 @@
 # coke-postgres
 
-**coke-postgres** 是 [wf-postgres](https://github.com/tenire/wf-postgres) 的 C++20 协程包装器，基于 [coke](https://github.com/kedixa/coke) 开发。
+English | [简体中文](README_CN.md)
 
-它提供了一层轻量级的接口封装，使其能够使用 `co_await` 来进行异步的 PostgreSQL 操作，并包含对逻辑事务连接的基础管理。
+**coke-postgres** is a C++20 coroutine wrapper for [wf-postgres](https://github.com/tenire/wf-postgres), built on top of [coke](https://github.com/kedixa/coke) and [Sogou Workflow](https://github.com/sogou/workflow).
 
-## ✨ 特性 (Features)
+It delivers a modern, high-performance, and memory-safe interface for asynchronous PostgreSQL access with `co_await`, featuring unified status handling, buffer ownership transfer, native parameterized queries, and robust connection/transaction lifecycle management.
 
-- **C++20 协程接口**：包装了 `wf_postgres` 的底层接口，提供协程 `co_await` 支持。
-- **逻辑连接模型**：使用 `transaction` URI 参数和无状态对象设计，配合底层 Factory 管理固定会话（Session）。
-- **安全的视图封装**：封装了 Result View，包含基础的空指针防备机制。
+---
 
-## 📦 依赖 (Dependencies)
+## ✨ Features
 
-本项目使用 [xmake](https://xmake.io/) 作为默认构建系统，底层依赖以下核心组件：
+- **Native C++20 Coroutines**: Full `co_await` syntax eliminating callback hell while preserving Workflow's event-driven concurrency.
+- **Unified Status (`res.ok()`)**: Unifies transport failures and PostgreSQL protocol server errors into a single check via `res.ok()`, with clear access to `res.sqlstate()` and `res.error_message()`.
+- **Buffer Ownership Transfer**: `PostgresResult` takes full ownership of the response buffer via move semantics in `PostgresAwaiter`, preventing dangling pointers and Use-After-Free (UAF) hazards across coroutine suspension points.
+- **Native Parameterized Queries**: Built-in support for PostgreSQL type matrix via C++ variadic arguments (`$1, $2, ...`) without manual string escaping or explicit `::type` casts.
+- **Symmetric Typed Decoders**: Direct extraction through `PostgresCellView` (`as_bool()`, `as_int()`, `as_bigint()`, `as_double()`, `as_datetime()`, `as_uuid_string()`, `as_jsonb_string()`, `as_bytea()`).
+- **Connection & Transaction Tracking**: `PostgresConnection` encapsulates `WFPostgresConnection`, providing real-time transaction state tracking (`in_transaction()`, `is_transaction_failed()`) and controlled graceful termination (`disconnect()`).
 
-- [workflow](https://github.com/sogou/workflow)：搜狗开源的 C++ 底层异步调度与网络通信框架。
-- [coke](https://github.com/kedixa/coke)：针对 workflow 的 C++20 协程封装，提供对原生的 `co_await` 支持。
-- [wf-postgres](https://github.com/tenire/wf-postgres)：基于 workflow 纯异步生态完整实现的 PostgreSQL 协议插件。
-- **OpenSSL**：用于保障底层的 TLS 加密通信握手。
+---
 
-## 🚀 快速上手 (Quick Start)
+## 📦 Dependencies
 
-### 1. 在项目中使用 / Use in your project
+Built with [xmake](https://xmake.io/) and relies on:
 
-如果您的主项目使用 Xmake，建议通过 `package()` 直接引入本仓库，无需将其上传至 xrepo 即可直接复用：
+- [workflow](https://github.com/sogou/workflow): High-performance asynchronous parallel framework.
+- [coke](https://github.com/kedixa/coke): C++20 coroutine wrapper for Workflow tasks.
+- [wf-postgres](https://github.com/tenire/wf-postgres): Asynchronous PostgreSQL wire protocol client.
+- **OpenSSL**: Secure STARTTLS and authentication cryptography.
+
+---
+
+## 🚀 Quick Start
+
+### 1. Project Integration
+
+Add `coke-postgres` to your `xmake.lua`:
 
 ```lua
 -- xmake.lua
 package("coke_postgres")
     add_deps("coke", "wf_postgres")
-    add_urls("https://github.com/tenire/coke-postgres.git") -- 请替换为实际的仓库地址
+    add_urls("https://github.com/tenire/coke-postgres.git")
     on_install("linux", "macosx", function (package)
         import("package.tools.xmake").install(package)
     end)
@@ -39,28 +50,36 @@ add_requires("coke_postgres")
 
 target("my_app")
     set_kind("binary")
+    set_languages("cxx20")
     add_files("src/*.cc")
     add_packages("coke_postgres")
 ```
 
-
-### 2. 本地编译与测试 / Local compile and run
-
-本项目使用 `xmake` 构建，你可以选择开启自带的 Tutorial 示例或单元测试：
+### 2. Build and Test Locally
 
 ```bash
-# 默认构建静态库
+# Build static library
 xmake f -c -y
 xmake
 
-# 开启教程和测试的构建
+# Build tutorials and test suite
 xmake f --tutorial=y --tests=y
 xmake
+
+# Run unit and integration tests
+xmake run test_postgres
+
+# Run parameterized query and transaction tutorial
+xmake run tutorial_params
 ```
 
-### 基础用法示例
+---
 
-简单查询，不需要开启显式的连接会话即可独立发起：
+## 💡 Code Examples
+
+### 3. Basic Query
+
+Stateless queries can be dispatched directly with `PostgresClient`:
 
 ```cpp
 #include <iostream>
@@ -72,65 +91,111 @@ coke::Task<int> hello_postgres(const ckpg::PostgresClientParams &params) {
 
     auto res = co_await cli.request("SELECT 'Hello, PostgreSQL!' AS greeting, current_timestamp;");
     
-    if (res.state != coke::STATE_SUCCESS || res.resp == nullptr || res.resp->is_error()) {
-        std::cerr << "Request failed or returned error.\n";
+    // Unified error check: false on transport failure or SQL execution error
+    if (!res.ok()) {
+        std::cerr << "Query failed: " << res.error_message()
+                  << " [SQLSTATE: " << res.sqlstate() << "]\n";
         co_return 1;
     }
 
-    ckpg::PostgresResultSetView view(res.resp);
+    // Zero-copy result view backed by owned response buffer
+    ckpg::PostgresResultSetView view(res);
     std::vector<ckpg::PostgresCellView> cells;
 
     while (view.next_row(cells)) {
-        for (const auto& c : cells) {
-            std::cout << (c.is_null() ? "NULL" : c.as_string()) << "\t";
-        }
-        std::cout << "\n";
+        std::cout << cells[0].as_string() << "\t"
+                  << cells[1].as_datetime_string() << "\n";
     }
 
     co_return 0;
 }
-
-int main() {
-    ckpg::PostgresClientParams params;
-    params.host = "127.0.0.1";
-    params.port = 5432;
-    params.username = "postgres";
-    params.password = "mysecretpassword";
-    
-    return coke::sync_wait(hello_postgres(params));
-}
 ```
 
-### 事务级会话 (Transaction Session)
+### 4. Parameterized Query
 
-当需要执行 `BEGIN`、创建 `TEMP TABLE` 或者跨多条 SQL 的事务级隔离时，使用 `PostgresConnection` 获取逻辑单连：
+Pass query parameters naturally as variadic arguments; types are automatically mapped to PostgreSQL OIDs without manual `::type` casts:
 
 ```cpp
-coke::Task<int> test_transaction(ckpg::PostgresClientParams params) {
-    // 创建一个逻辑连接，独占底层一个 Session
-    ckpg::PostgresConnection conn(params);
+coke::Task<int> query_users(ckpg::PostgresClient &cli) {
+    int user_id = 1001;
+    std::string role = "admin";
+    bool active = true;
 
-    // 发起连续的事务操作
-    co_await conn.request("BEGIN");
-    co_await conn.request("CREATE TEMP TABLE ckpg_tmp_test(v int)");
-    co_await conn.request("INSERT INTO ckpg_tmp_test VALUES (42)");
-    
-    auto res = co_await conn.request("SELECT v FROM ckpg_tmp_test");
-    ckpg::PostgresResultSetView view(res.resp);
-    
-    // ... 对数据进行处理 ...
+    // Parameters bind directly to $1, $2, $3 with type safety
+    auto res = co_await cli.request(
+        "SELECT id, username, is_active, score FROM users WHERE id = $1 AND role = $2 AND is_active = $3;",
+        user_id, role, active
+    );
 
-    co_await conn.request("ROLLBACK");
-    
-    // 安全断开连接，及时向底层归还资源
-    co_await conn.disconnect();
-    
+    if (!res.ok()) {
+        std::cerr << "Query error: " << res.error_message() << "\n";
+        co_return 1;
+    }
+
+    ckpg::PostgresResultSetView view(res);
+    std::vector<ckpg::PostgresCellView> cells;
+
+    while (view.next_row(cells)) {
+        // High-level typed decoders
+        int64_t id = cells[0].as_bigint();
+        std::string username = cells[1].as_string();
+        bool is_active = cells[2].as_bool();
+        double score = cells[3].as_double();
+
+        std::cout << "User: " << id << ", " << username
+                  << ", active=" << (is_active ? "true" : "false")
+                  << ", score=" << score << "\n";
+    }
+
     co_return 0;
 }
 ```
 
-> **生命周期警告**：请始终保证 `PostgresConnection` 的析构晚于基于其发起的任何 `co_await conn.request()`。连接被析构时会同步释放其对应的**逻辑连接 ID**。
+### 5. Transaction Session
 
-## 📜 许可证 (License)
+For `BEGIN`, `COMMIT`, `ROLLBACK`, temporary tables, or connection-scoped operations, use `PostgresConnection`:
 
-本项目采用与 Coke / Workflow 一致的开源协议发行。
+```cpp
+coke::Task<int> transfer_funds(const ckpg::PostgresClientParams &params, int from_id, int to_id, double amount) {
+    // Dedicated connection owning a logical session context
+    ckpg::PostgresConnection conn(params);
+
+    // 1. Begin transaction
+    auto begin_res = co_await conn.request("BEGIN;");
+    if (!begin_res.ok()) co_return 1;
+
+    // Inspect real-time transaction state
+    assert(conn.in_transaction());
+
+    // 2. Execute statements
+    auto res1 = co_await conn.request("UPDATE accounts SET balance = balance - $1 WHERE id = $2;", amount, from_id);
+    auto res2 = co_await conn.request("UPDATE accounts SET balance = balance + $1 WHERE id = $2;", amount, to_id);
+
+    if (!res1.ok() || !res2.ok()) {
+        // If SQL error occurs, conn.is_transaction_failed() automatically becomes true
+        std::cerr << "Transaction failed, rolling back...\n";
+        co_await conn.request("ROLLBACK;");
+        co_return 1;
+    }
+
+    // 3. Commit
+    co_await conn.request("COMMIT;");
+
+    // 4. Gracefully disconnect and release resources
+    co_await conn.disconnect();
+    co_return 0;
+}
+```
+
+---
+
+## ⚠️ Lifetime & Safety Rules
+
+1. **Owned Buffers**: `PostgresResult` holds full ownership of the response buffer. Results remain valid across coroutine suspension points or when returned out of scope.
+2. **Connection Invariant**: All awaitables created from a `PostgresConnection` must complete before the connection object is destroyed.
+
+---
+
+## 📜 License
+
+Licensed under the same Apache 2.0 license as Coke and Workflow.

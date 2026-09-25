@@ -16,14 +16,18 @@ coke::Task<> run(const ckpg::PostgresClientParams &params)
             break;
 
         auto res = co_await cli.request(sql);
-        if (res.state != coke::STATE_SUCCESS) {
-            std::cerr << "Request error: state=" << res.state << " error=" << res.error << "\n";
+        if (!res.ok()) {
+            std::cerr << "Query failed: " << res.error_message();
+            if (!res.sqlstate().empty()) {
+                std::cerr << " [SQLSTATE " << res.sqlstate() << "]";
+            }
+            std::cerr << "\n";
             continue;
         }
 
-        ckpg::PostgresResultSetView view(res.resp);
+        ckpg::PostgresResultSetView view(res);
         if (view.is_error()) {
-            std::cerr << "Response error\n";
+            std::cerr << "Result error: " << res.error_message() << "\n";
             continue;
         }
 
@@ -41,7 +45,11 @@ coke::Task<> run(const ckpg::PostgresClientParams &params)
             std::cout << "\n";
             row_count++;
         }
-        std::cout << "(" << row_count << " rows)\n";
+        if (!view.get_command_tag().empty()) {
+            std::cout << view.get_command_tag() << " (" << row_count << " rows)\n";
+        } else {
+            std::cout << "(" << row_count << " rows)\n";
+        }
     }
 }
 

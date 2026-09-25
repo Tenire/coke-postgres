@@ -1,6 +1,6 @@
 #include "ckpg/postgres_client.h"
 #include "workflow/StringUtil.h"
-#include "PostgresTask.h"
+#include "WFPostgresClient.h"
 #include <functional>
 #include <mutex>
 #include <queue>
@@ -98,7 +98,7 @@ PostgresClient::PostgresClient(const PostgresClientParams &p,
 
     if (unique_conn) {
         params.retry_max = 0;
-        append_query("transaction", "ckpg_postgres_transaction_id_" + std::to_string(conn_id));
+        // connection routing is managed by WFPostgresConnection
     }
 
     // URIParser::parse returns 0 on success
@@ -127,24 +127,96 @@ PostgresClient::AwaiterType PostgresClient::request(const std::string &query)
     return AwaiterType(task);
 }
 
-PostgresConnection::PostgresConnection(const PostgresClientParams &p)
-    : PostgresClient(p, true, acquire_conn_id())
-{
-}
-
-PostgresConnection::~PostgresConnection()
-{
-    release_conn_id(conn_id);
-}
-
-PostgresClient::AwaiterType PostgresConnection::disconnect()
+PostgresClient::AwaiterType PostgresClient::request(
+    const std::string &query,
+    const std::vector<PostgresParameter> &params_vec)
 {
     if (!valid_uri) {
         return AwaiterType(nullptr);
     }
-    auto *task = wfpg::WFPostgresTaskFactory::create_disconnect_task(
-        uri, params.retry_max, nullptr);
 
+    wfpg::WFPostgresTask *task = wfpg::WFPostgresTaskFactory::create_postgres_task(uri, params.retry_max, nullptr);
+
+    if (task) {
+        task->get_req()->set_query(query, params_vec);
+        task->set_send_timeout(params.send_timeout);
+        task->set_receive_timeout(params.receive_timeout);
+        task->set_keep_alive(params.keep_alive_timeout);
+    }
+
+    return AwaiterType(task);
+}
+
+PostgresConnection::PostgresConnection(const PostgresClientParams &p)
+    : PostgresClient(p, true, acquire_conn_id())
+{
+    if (valid_uri) {
+        conn_ = std::make_unique<wfpg::WFPostgresConnection>(static_cast<int>(conn_id));
+        if (conn_->init(url) != 0) {
+            conn_.reset();
+        }
+    }
+}
+
+PostgresConnection::~PostgresConnection()
+{
+    if (conn_) {
+        conn_->deinit();
+    }
+    release_conn_id(conn_id);
+}
+
+PostgresClient::AwaiterType PostgresConnection::request(const std::string &query)
+{
+    if (!conn_ || !valid_uri) {
+        return AwaiterType(nullptr);
+    }
+
+    wfpg::WFPostgresTask *task = conn_->create_query_task(query, wfpg::postgres_callback_t(nullptr));
+    if (task) {
+        task->set_send_timeout(params.send_timeout);
+        task->set_receive_timeout(params.receive_timeout);
+        task->set_keep_alive(params.keep_alive_timeout);
+    }
+
+    auto hook = [conn = conn_.get()](wfpg::WFPostgresTask *t) {
+        if (conn && t && t->get_resp()) {
+            conn->set_last_transaction_state(t->get_resp()->get_transaction_state());
+        }
+    };
+    return AwaiterType(task, std::move(hook));
+}
+
+PostgresClient::AwaiterType PostgresConnection::request(
+    const std::string &query,
+    const std::vector<PostgresParameter> &binds)
+{
+    if (!conn_ || !valid_uri) {
+        return AwaiterType(nullptr);
+    }
+
+    wfpg::WFPostgresTask *task = conn_->create_query_task(query, binds, wfpg::postgres_callback_t(nullptr));
+    if (task) {
+        task->set_send_timeout(params.send_timeout);
+        task->set_receive_timeout(params.receive_timeout);
+        task->set_keep_alive(params.keep_alive_timeout);
+    }
+
+    auto hook = [conn = conn_.get()](wfpg::WFPostgresTask *t) {
+        if (conn && t && t->get_resp()) {
+            conn->set_last_transaction_state(t->get_resp()->get_transaction_state());
+        }
+    };
+    return AwaiterType(task, std::move(hook));
+}
+
+PostgresClient::AwaiterType PostgresConnection::disconnect()
+{
+    if (!conn_ || !valid_uri) {
+        return AwaiterType(nullptr);
+    }
+
+    wfpg::WFPostgresTask *task = conn_->create_disconnect_task(wfpg::postgres_callback_t(nullptr));
     if (task) {
         task->set_send_timeout(params.send_timeout);
         task->set_receive_timeout(params.receive_timeout);
@@ -152,6 +224,36 @@ PostgresClient::AwaiterType PostgresConnection::disconnect()
     }
 
     return AwaiterType(task);
+}
+
+PostgresClient::AwaiterType PostgresConnection::cancel()
+{
+    if (!conn_ || !valid_uri) {
+        return AwaiterType(nullptr);
+    }
+
+    wfpg::WFPostgresTask *task = conn_->create_cancel_task(wfpg::postgres_callback_t(nullptr));
+    return AwaiterType(task);
+}
+
+char PostgresConnection::get_last_transaction_state() const
+{
+    return conn_ ? conn_->get_last_transaction_state() : 'I';
+}
+
+bool PostgresConnection::in_transaction() const
+{
+    return conn_ && conn_->in_transaction();
+}
+
+bool PostgresConnection::is_transaction_failed() const
+{
+    return conn_ && conn_->is_transaction_failed();
+}
+
+int32_t PostgresConnection::get_backend_pid() const
+{
+    return conn_ ? conn_->get_backend_pid() : 0;
 }
 
 std::size_t PostgresConnection::acquire_conn_id()
