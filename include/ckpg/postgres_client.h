@@ -102,18 +102,14 @@ struct PostgresResult {
 
 class PostgresAwaiter : public coke::BasicAwaiter<PostgresResult> {
 public:
-    explicit PostgresAwaiter(wfpg::WFPostgresTask *task,
-                            std::function<void(wfpg::WFPostgresTask*)> hook = nullptr) {
+    explicit PostgresAwaiter(wfpg::WFPostgresTask *task) {
         if (!task) {
             PostgresResult res{coke::STATE_SYS_ERROR, 0, nullptr, nullptr};
             this->emplace_result(std::move(res));
             return;
         }
 
-        task->set_callback([info = this->get_info(), hook = std::move(hook)](wfpg::WFPostgresTask *t) {
-            if (hook) {
-                hook(t);
-            }
+        task->set_callback([info = this->get_info()](wfpg::WFPostgresTask *t) {
             auto *awaiter = info->get_awaiter<PostgresAwaiter>();
             if (awaiter) {
                 PostgresResult res{t->get_state(), t->get_error(), t, t->get_resp()};

@@ -64,13 +64,23 @@ coke::Task<int> test_connection_session(ckpg::PostgresClientParams params) {
             }
         }
     }
+    if (conn.get_backend_pid() <= 0) {
+        std::cerr << "test_connection_session expected positive backend pid, got "
+                  << conn.get_backend_pid() << "\n";
+        co_return 1;
+    }
 
     auto dis = co_await conn.disconnect();
-    if (dis.state != coke::STATE_SUCCESS) {
+    if (!dis.ok()) {
         std::cerr << "test_connection_session disconnect failed\n";
         co_return 1;
     }
 
+    if (conn.get_backend_pid() != 0) {
+        std::cerr << "test_connection_session expected backend pid reset to 0 after disconnect, got "
+                  << conn.get_backend_pid() << "\n";
+        co_return 1;
+    }
     co_return 0;
 }
 coke::Task<int> test_chrono_and_outcome(ckpg::PostgresClientParams params) {
@@ -259,19 +269,31 @@ coke::Task<int> test_transaction_error_and_state(ckpg::PostgresClientParams para
         co_return 1;
     }
 
-    auto res_rb = co_await conn.request("ROLLBACK;");
-    if (!res_rb.ok()) {
-        std::cerr << "ROLLBACK failed\n";
+    // Upstream d18cbc5 contract: failed transaction ('E') disposes socket to protect
+    // continuity; subsequent queries are rejected with ECONNRESET until explicit disconnect.
+    auto res_after = co_await conn.request("ROLLBACK;");
+    if (res_after.state != coke::STATE_SYS_ERROR || res_after.error != ECONNRESET) {
+        std::cerr << "expected ECONNRESET after failed transaction but got state="
+                  << res_after.state << " error=" << res_after.error << "\n";
         co_return 1;
     }
-    if (conn.in_transaction() || conn.is_transaction_failed()) {
-        std::cerr << "state after ROLLBACK invalid\n";
+    if (!conn.is_transaction_failed()) {
+        std::cerr << "expected is_transaction_failed() to remain true before disconnect\n";
         co_return 1;
     }
 
     auto dis = co_await conn.disconnect();
     if (!dis.ok()) {
         std::cerr << "disconnect failed\n";
+        co_return 1;
+    }
+    if (conn.in_transaction() || conn.is_transaction_failed()) {
+        std::cerr << "state after disconnect invalid\n";
+        co_return 1;
+    }
+    auto res_fresh = co_await conn.request("SELECT 1;");
+    if (!res_fresh.ok()) {
+        std::cerr << "fresh query after disconnect failed\n";
         co_return 1;
     }
 

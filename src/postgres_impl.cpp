@@ -298,12 +298,7 @@ PostgresClient::AwaiterType PostgresConnection::request(const std::string &query
         task->set_keep_alive(params.keep_alive_timeout);
     }
 
-    auto hook = [conn = conn_.get()](wfpg::WFPostgresTask *t) {
-        if (conn && t && t->get_resp()) {
-            conn->set_last_transaction_state(t->get_resp()->get_transaction_state());
-        }
-    };
-    return AwaiterType(task, std::move(hook));
+    return AwaiterType(task);
 }
 
 PostgresClient::AwaiterType PostgresConnection::request(
@@ -321,12 +316,7 @@ PostgresClient::AwaiterType PostgresConnection::request(
         task->set_keep_alive(params.keep_alive_timeout);
     }
 
-    auto hook = [conn = conn_.get()](wfpg::WFPostgresTask *t) {
-        if (conn && t && t->get_resp()) {
-            conn->set_last_transaction_state(t->get_resp()->get_transaction_state());
-        }
-    };
-    return AwaiterType(task, std::move(hook));
+    return AwaiterType(task);
 }
 
 PostgresClient::AwaiterType PostgresConnection::disconnect()
