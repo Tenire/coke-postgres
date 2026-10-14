@@ -5,8 +5,11 @@ add_rules("plugin.compile_commands.autoupdate", {outputdir = "build"})
 
 set_languages("cxx20")
 
-includes("packages/coke/xmake.lua")
-includes("packages/wf_postgres/xmake.lua")
+add_repositories("t-xrepo https://github.com/Tenire/xrepo.git")
+-- add_repositories("local-repo .")
+
+add_requires("wf_postgres")
+add_requires("coke")
 
 target("coke_postgres")
     set_kind("static")

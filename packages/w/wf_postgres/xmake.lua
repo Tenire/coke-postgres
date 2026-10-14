@@ -5,5 +5,3 @@ package("wf_postgres")
         import("package.tools.xmake").install(package)
     end)
 package_end()
-
-add_requires("wf_postgres", "coke")
